@@ -1,0 +1,16 @@
+node_modules/
+release/
+dist/
+dist-electron/
+out/
+.vite/
+
+auth_info/
+config.json
+
+.env
+.env.local
+.env.production
+
+*.log
+.DS_Store
