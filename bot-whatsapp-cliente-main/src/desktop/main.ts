@@ -80,7 +80,7 @@ function registerIpc() {
   });
   ipcMain.handle("bot:enableMonitoring", async () => {
     try {
-      bot.enableMonitoring();
+      await bot.enableMonitoring();
     } catch (err) {
       // ignore
     }
