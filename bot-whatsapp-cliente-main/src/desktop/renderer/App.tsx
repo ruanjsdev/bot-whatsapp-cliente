@@ -14,7 +14,7 @@ const emptySnapshot: BotSnapshot = {
   config: {
     grupoAlvoJid: "",
     grupoAlvoNome: "",
-    nomeEnvio: "Ruan Souza da Silva",
+    nomeEnvio: "Alan Alves,
     codigosMensagens: []
   },
   groups: [],
