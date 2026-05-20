@@ -8,6 +8,14 @@ import { QrCodeBox } from "./components/QrCodeBox";
 import { StatusCard } from "./components/StatusCard";
 import "./styles.css";
 
+type PendingConfirmation = {
+  title: string;
+  message: string;
+  details: string[];
+  confirmLabel: string;
+  onConfirm: () => void | Promise<void>;
+};
+
 const emptySnapshot: BotSnapshot = {
   status: "disconnected",
   qrCode: "",
@@ -24,6 +32,7 @@ const emptySnapshot: BotSnapshot = {
 export default function App() {
   const [snapshot, setSnapshot] = useState<BotSnapshot>(emptySnapshot);
   const [busy, setBusy] = useState(false);
+  const [confirmation, setConfirmation] = useState<PendingConfirmation>();
 
   useEffect(() => {
     window.botApi.getSnapshot().then(setSnapshot);
@@ -41,6 +50,58 @@ export default function App() {
     } finally {
       setBusy(false);
     }
+  }
+
+  function buildMessagePreview(senderName = snapshot.config.nomeEnvio, codes = snapshot.config.codigosMensagens) {
+    return codes.map((code) => `${senderName.trim()} ${code.trim().toUpperCase()}`.trim());
+  }
+
+  function confirmSaveGroup(group: string, groupId?: string, groupName?: string) {
+    const selectedGroupName = groupName || group;
+
+    setConfirmation({
+      title: "Confirmar grupo",
+      message: `Deseja realmente enviar mensagens no grupo: ${selectedGroupName}?`,
+      details: groupId ? [`ID do grupo: ${groupId}`] : ["Grupo informado manualmente."],
+      confirmLabel: "Salvar grupo",
+      onConfirm: () => runAction(() => window.botApi.saveGroup({ group, groupId, groupName }))
+    });
+  }
+
+  function confirmSaveMessages(senderName: string, codes: string[]) {
+    const messages = buildMessagePreview(senderName, codes);
+
+    setConfirmation({
+      title: "Confirmar mensagens",
+      message: "Deseja salvar estas mensagens para envio?",
+      details: messages.length ? messages : ["Nenhuma mensagem pronta."],
+      confirmLabel: "Salvar mensagens",
+      onConfirm: () => runAction(() => window.botApi.saveMessageSettings({ senderName, codes }))
+    });
+  }
+
+  function confirmStartMonitoring() {
+    const messages = buildMessagePreview();
+
+    setConfirmation({
+      title: "Iniciar bot",
+      message: "Deseja iniciar o bot com estas configurações?",
+      details: [
+        `Grupo selecionado: ${groupLabel}`,
+        messages.length
+          ? `Mensagens a enviar: ${messages.join(" | ")}`
+          : "Mensagens a enviar: nenhuma mensagem configurada."
+      ],
+      confirmLabel: "Iniciar bot",
+      onConfirm: () => runAction(window.botApi.startMonitoring)
+    });
+  }
+
+  async function confirmPendingAction() {
+    if (!confirmation) return;
+    const action = confirmation.onConfirm;
+    setConfirmation(undefined);
+    await action();
   }
 
   return (
@@ -64,7 +125,7 @@ export default function App() {
             status={snapshot.status}
             onStart={() => runAction(window.botApi.startBot)}
             onStop={() => runAction(window.botApi.stopBot)}
-            onStartMonitoring={() => runAction(window.botApi.startMonitoring)}
+            onStartMonitoring={confirmStartMonitoring}
             onStopMonitoring={() => runAction(window.botApi.stopMonitoring)}
             onRestart={() => runAction(window.botApi.restartBot)}
             onClearSession={() => runAction(window.botApi.clearSession)}
@@ -75,16 +136,12 @@ export default function App() {
             groups={snapshot.groups}
             busy={busy}
             onRefresh={() => runAction(window.botApi.refreshGroups)}
-            onSave={(group, groupId, groupName) =>
-              runAction(() => window.botApi.saveGroup({ group, groupId, groupName }))
-            }
+            onSave={confirmSaveGroup}
           />
           <MessageConfig
             config={snapshot.config}
             busy={busy}
-            onSave={(senderName, codes) =>
-              runAction(() => window.botApi.saveMessageSettings({ senderName, codes }))
-            }
+            onSave={confirmSaveMessages}
           />
         </div>
 
@@ -93,6 +150,29 @@ export default function App() {
           <LogsPanel logs={snapshot.logs} />
         </div>
       </section>
+
+      {confirmation ? (
+        <div className="modal-backdrop" role="presentation">
+          <section className="confirmation-dialog" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+            <p className="panel-label">Confirmação</p>
+            <h2 id="confirm-title">{confirmation.title}</h2>
+            <p className="confirmation-message">{confirmation.message}</p>
+            <div className="confirmation-details">
+              {confirmation.details.map((detail, index) => (
+                <span key={`${detail}-${index}`}>{detail}</span>
+              ))}
+            </div>
+            <div className="confirmation-actions">
+              <button className="button" disabled={busy} type="button" onClick={() => setConfirmation(undefined)}>
+                Cancelar
+              </button>
+              <button className="button primary" disabled={busy} type="button" onClick={confirmPendingAction}>
+                {confirmation.confirmLabel}
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
     </main>
   );
 }

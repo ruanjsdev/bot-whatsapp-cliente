@@ -322,6 +322,61 @@ h2 {
   overflow-wrap: anywhere;
 }
 
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(1, 4, 9, 0.72);
+}
+
+.confirmation-dialog {
+  display: grid;
+  gap: 14px;
+  width: min(520px, 100%);
+  max-height: calc(100vh - 40px);
+  overflow: auto;
+  padding: 22px;
+  border: 1px solid rgba(139, 148, 158, 0.28);
+  border-radius: 8px;
+  background: #161b22;
+  box-shadow: 0 24px 80px rgba(1, 4, 9, 0.5);
+}
+
+.confirmation-dialog h2 {
+  font-size: 1.5rem;
+}
+
+.confirmation-message {
+  margin: 0;
+  color: #e6edf3;
+  line-height: 1.5;
+}
+
+.confirmation-details {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid rgba(139, 148, 158, 0.16);
+  border-radius: 8px;
+  background: #0d1117;
+}
+
+.confirmation-details span {
+  color: #c9d1d9;
+  font-size: 0.9rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.confirmation-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
 .panel-heading {
   display: flex;
   align-items: center;

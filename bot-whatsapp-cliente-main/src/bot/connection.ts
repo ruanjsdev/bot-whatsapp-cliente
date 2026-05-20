@@ -76,17 +76,17 @@ export class BotService extends EventEmitter {
     this.montarMensagens();
   }
 
-getSnapshot(): BotSnapshot {
-  return {
-    status: this.status,
-    qrCode: this.qrCode,
-    config: this.configStore.load(),
-    groups: this.groups,
-    logs: this.logger.all(),
-    error: this.error,
-    monitoringEnabled: this.monitoringEnabled  
-  };
-}
+  getSnapshot(): BotSnapshot {
+    return {
+      status: this.status,
+      qrCode: this.qrCode,
+      config: this.configStore.load(),
+      groups: this.groups,
+      logs: this.logger.all(),
+      error: this.error,
+      monitoringEnabled: this.monitoringEnabled
+    };
+  }
   isMonitoringEnabled(): boolean {
     return this.monitoringEnabled;
   }
@@ -550,7 +550,7 @@ getSnapshot(): BotSnapshot {
     });
 
     this.logger.info(
-      `Modo ultra rápido: ${mensagens.length} mensagens separadas disparadas com intervalo de 40ms: ${mensagens.join(" | ")}`
+      `Modo ultra rápido: ${mensagens.length} mensagens separadas disparadas com intervalo de 80ms: ${mensagens.join(" | ")}`
     );
   }
 
