@@ -8,6 +8,10 @@ import {
   SaveMessageSettingsPayload
 } from "../shared/types";
 
+app.commandLine.appendSwitch("disable-gpu");
+app.commandLine.appendSwitch("disable-gpu-compositing");
+app.commandLine.appendSwitch("disable-features", "Vulkan,VulkanFromANGLE,DefaultANGLEVulkan");
+app.commandLine.appendSwitch("ignore-gpu-blocklist");
 app.disableHardwareAcceleration();
 
 let mainWindow: BrowserWindow | undefined;

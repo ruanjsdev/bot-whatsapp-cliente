@@ -596,10 +596,7 @@ export class BotService extends EventEmitter {
 
   private async resolveConfiguredGroup() {
     const config = this.configStore.load();
-    const group = await resolveGroup(this.sock, {
-      jid: config.grupoAlvoJid,
-      name: config.grupoAlvoNome
-    });
+    const group = await this.resolveConfiguredTargetGroup(config);
 
     if (!group.jid) {
       this.logger.warning("Nenhum grupo configurado. Informe o nome ou ID na interface.");
@@ -615,6 +612,44 @@ export class BotService extends EventEmitter {
     this.prepareSendPlan();
 
     this.logger.success(`Grupo configurado: ${nextConfig.grupoAlvoNome}`);
+  }
+
+  private async resolveConfiguredTargetGroup(config: BotConfig) {
+    if (config.grupoAlvoJid && this.groupMetadataCache.has(config.grupoAlvoJid)) {
+      const metadata = this.groupMetadataCache.get(config.grupoAlvoJid);
+      return {
+        jid: config.grupoAlvoJid,
+        name: String(metadata?.subject || config.grupoAlvoNome || "Grupo salvo")
+      };
+    }
+
+    if (config.grupoAlvoNome) {
+      const wanted = normalizarTexto(config.grupoAlvoNome);
+      const foundByName = this.groups.find((group) => normalizarTexto(group.name) === wanted);
+
+      if (foundByName) {
+        this.logger.info("Grupo salvo por ID não foi encontrado. Revalidando pelo nome do grupo.");
+        return {
+          jid: foundByName.id,
+          name: foundByName.name
+        };
+      }
+    }
+
+    if (config.grupoAlvoJid) {
+      this.logger.warning(
+        "O ID do grupo salvo não apareceu na lista atual do WhatsApp. Atualize a lista e salve o grupo novamente."
+      );
+      return {
+        jid: "",
+        name: config.grupoAlvoNome
+      };
+    }
+
+    return resolveGroup(this.sock, {
+      jid: config.grupoAlvoJid,
+      name: config.grupoAlvoNome
+    });
   }
 
   private async loadGroups() {
@@ -643,7 +678,7 @@ export class BotService extends EventEmitter {
       const config = this.configStore.load();
       if (!config.grupoAlvoJid || !this.sock) return;
 
-      const metadata = await this.sock.groupMetadata(config.grupoAlvoJid);
+      const metadata = await this.refreshGroupMetadata(config.grupoAlvoJid);
       if (!metadata) return;
 
       const isGroupClosed = metadata.announce === true;
@@ -1343,12 +1378,22 @@ export class BotService extends EventEmitter {
   }
 
   private async refreshGroupMetadata(jid: string) {
-    const metadata = await this.sock.groupMetadata(jid);
-    if (metadata) {
-      this.groupMetadataCache.set(jid, metadata);
-    }
+    try {
+      const metadata = await this.sock.groupMetadata(jid);
+      if (metadata) {
+        this.groupMetadataCache.set(jid, metadata);
+      }
 
-    return metadata;
+      return metadata;
+    } catch (error) {
+      const message = this.getErrorMessage(error);
+      if (message.toLowerCase().includes("item-not-found")) {
+        this.logger.warning("Grupo salvo não foi encontrado pelo WhatsApp. Atualize a lista e salve o grupo novamente.");
+        return undefined;
+      }
+
+      throw error;
+    }
   }
 
   private delay(ms: number) {

@@ -7,7 +7,7 @@ export const DEFAULT_CONFIG: BotConfig = {
   grupoAlvoNome: "",
   grupoTesteJid: "",
   grupoTesteNome: "",
-  nomeEnvio: "Alan Alves",
+  nomeEnvio: "Alan da Silva Alves",
   codigosMensagensAlvo: [],
   codigosMensagensTeste: []
 };
@@ -102,7 +102,9 @@ export class ConfigStore {
       grupoTesteJid: typeof input.grupoTesteJid === "string" ? input.grupoTesteJid : "",
       grupoTesteNome: typeof input.grupoTesteNome === "string" ? input.grupoTesteNome : "",
       nomeEnvio:
-        typeof input.nomeEnvio === "string" && input.nomeEnvio.trim() && input.nomeEnvio.trim() !== "Ruan Souza da Silva"
+        typeof input.nomeEnvio === "string" &&
+        input.nomeEnvio.trim() &&
+        !["Ruan Souza da Silva", "Alan Alves"].includes(input.nomeEnvio.trim())
           ? input.nomeEnvio.trim()
           : DEFAULT_CONFIG.nomeEnvio,
       // support legacy `codigosMensagens` if present

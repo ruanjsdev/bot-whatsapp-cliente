@@ -7,7 +7,7 @@
     "dev": "ts-node src/index.ts",
     "desktop:dev": "concurrently -k \"npm:renderer:dev\" \"npm:electron:dev\"",
     "renderer:dev": "vite --host 127.0.0.1",
-    "electron:dev": "npm run build:main && wait-on http://127.0.0.1:5173 && cross-env ELECTRON_DISABLE_SECURITY_WARNINGS=true electron .",
+    "electron:dev": "npm run build:main && wait-on http://127.0.0.1:5173 && cross-env ELECTRON_DISABLE_SECURITY_WARNINGS=true LIBGL_ALWAYS_SOFTWARE=1 electron . --disable-gpu --disable-gpu-compositing --disable-features=Vulkan,VulkanFromANGLE,DefaultANGLEVulkan",
     "build": "tsc && vite build",
     "build:main": "tsc",
     "desktop:build": "npm run build && electron-builder --win",

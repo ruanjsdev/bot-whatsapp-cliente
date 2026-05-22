@@ -6,6 +6,7 @@ import { GroupTestConfig } from "./components/GroupTestConfig";
 import { LogsPanel } from "./components/LogsPanel";
 import { MessageConfig } from "./components/MessageConfig";
 import { QrCodeBox } from "./components/QrCodeBox";
+import { RealRouteConfig } from "./components/RealRouteConfig";
 import { StatusCard } from "./components/StatusCard";
 import "./styles.css";
 
@@ -59,7 +60,7 @@ const emptySnapshot: BotSnapshot = {
     grupoAlvoNome: "",
     grupoTesteJid: "",
     grupoTesteNome: "",
-    nomeEnvio: "Alan Alves",
+    nomeEnvio: "Alan da Silva Alves",
     codigosMensagensAlvo: [],
     codigosMensagensTeste: []
   },
@@ -147,13 +148,6 @@ export default function App() {
 
   function completeOnboarding() {
     updateOnboarding({ step: "completed" });
-    setConfirmation({
-      title: "Configuração concluída",
-      message: "Configuração concluída. Agora você pode usar o bot normalmente.",
-      details: ["O tutorial obrigatório foi finalizado e a janela está liberada."],
-      confirmLabel: "Entendi",
-      onConfirm: async () => {}
-    });
   }
 
   function resetOnboarding() {
@@ -511,7 +505,22 @@ export default function App() {
   }
 
   function finishTargetTestWarmup() {
-    updateOnboarding({ step: "target-test-stop" });
+    void runAction(window.botApi.stopMonitoring).finally(() => {
+      completeOnboarding();
+    });
+  }
+
+  function saveRealRouteSettings(
+    group: string,
+    groupId: string | undefined,
+    groupName: string | undefined,
+    senderName: string,
+    codes: string[]
+  ) {
+    void runAction(async () => {
+      await window.botApi.saveGroup({ group, groupId, groupName });
+      return window.botApi.saveTargetMessageSettings({ senderName, codes });
+    });
   }
 
   const currentTutorial = getCurrentTutorialTarget();
@@ -527,6 +536,7 @@ export default function App() {
       : isOnboardingReady && onboarding.step === "target-test-stop"
       ? "stop-monitoring"
       : undefined;
+  const onboardingCompleted = onboarding.step === "completed";
 
   return (
     <main
@@ -573,68 +583,80 @@ export default function App() {
               tutorialMode={tutorialControlMode}
             />
           </div>
-          <div
-            className={canUsePanel("target-group") ? "tutorial-panel-active" : undefined}
-            data-tutorial-id="target-group-panel"
-          >
-            <GroupConfig
+          {onboardingCompleted ? (
+            <RealRouteConfig
               config={snapshot.config}
               groups={snapshot.groups}
               busy={busy}
               onRefresh={() => runAction(window.botApi.refreshGroups)}
-              onSave={confirmSaveGroup}
-              disabled={isOnboardingReady && !canUsePanel("target-group")}
-              tutorialNotice={
-                isOnboardingReady && onboarding.step === "target-test-group"
-                  ? "ATENÇÃO: este ainda não é o grupo real."
-                  : isOnboardingReady && onboarding.step === "real-group"
-                  ? "ATENÇÃO: este é o grupo real das rotas. Confira com cuidado antes de salvar."
-                  : undefined
-              }
+              onSave={saveRealRouteSettings}
             />
-          </div>
-          <div
-            className={canUsePanel("warmup-group") || canUsePanel("warmup-button") ? "tutorial-panel-active" : undefined}
-            data-tutorial-id="warmup-group-panel"
-          >
-            <GroupTestConfig
-              config={snapshot.config}
-              groups={snapshot.groups}
-              busy={busy}
-              warmupCompleted={snapshot.warmupCompleted}
-              onSave={confirmSaveTestGroup}
-              onWarmup={confirmWarmup}
-              disabled={isOnboardingReady && !canUsePanel("warmup-group") && !canUsePanel("warmup-button")}
-              disableGroupFields={isOnboardingReady && !canUsePanel("warmup-group")}
-              disableWarmup={isOnboardingReady && !canUsePanel("warmup-button")}
-              warmupCounter={
-                isOnboardingReady && onboarding.step === "warmup-clicks"
-                  ? `${onboarding.warmupClicks}/3`
-                  : isOnboardingReady && onboarding.step === "real-warmup-clicks"
-                  ? `${onboarding.realWarmupClicks}/3`
-                  : undefined
-              }
-            />
-          </div>
-          <div
-            className={canUsePanel("message") ? "tutorial-panel-active" : undefined}
-            data-tutorial-id="message-panel"
-          >
-            <MessageConfig
-              config={snapshot.config}
-              busy={busy}
-              onSaveWarmup={confirmSaveWarmupMessages}
-              onSaveTarget={confirmSaveTargetMessages}
-              forcedMode={forcedMessageMode}
-              disabled={isOnboardingReady && !canUsePanel("message")}
-              validationError={onboardingError}
-              tutorialNotice={
-                isOnboardingReady && onboarding.step === "real-message"
-                  ? "A mensagem real não pode ser igual à mensagem usada no grupo alvo teste."
-                  : undefined
-              }
-            />
-          </div>
+          ) : (
+            <>
+              <div
+                className={canUsePanel("target-group") ? "tutorial-panel-active" : undefined}
+                data-tutorial-id="target-group-panel"
+              >
+                <GroupConfig
+                  config={snapshot.config}
+                  groups={snapshot.groups}
+                  busy={busy}
+                  onRefresh={() => runAction(window.botApi.refreshGroups)}
+                  onSave={confirmSaveGroup}
+                  disabled={isOnboardingReady && !canUsePanel("target-group")}
+                  tutorialNotice={
+                    isOnboardingReady && onboarding.step === "target-test-group"
+                      ? "ATENÇÃO: este ainda não é o grupo real."
+                      : isOnboardingReady && onboarding.step === "real-group"
+                      ? "ATENÇÃO: este é o grupo real das rotas. Confira com cuidado antes de salvar."
+                      : undefined
+                  }
+                />
+              </div>
+              <div
+                className={canUsePanel("warmup-group") || canUsePanel("warmup-button") ? "tutorial-panel-active" : undefined}
+                data-tutorial-id="warmup-group-panel"
+              >
+                <GroupTestConfig
+                  config={snapshot.config}
+                  groups={snapshot.groups}
+                  busy={busy}
+                  warmupCompleted={snapshot.warmupCompleted}
+                  onSave={confirmSaveTestGroup}
+                  onWarmup={confirmWarmup}
+                  disabled={isOnboardingReady && !canUsePanel("warmup-group") && !canUsePanel("warmup-button")}
+                  disableGroupFields={isOnboardingReady && !canUsePanel("warmup-group")}
+                  disableWarmup={isOnboardingReady && !canUsePanel("warmup-button")}
+                  warmupCounter={
+                    isOnboardingReady && onboarding.step === "warmup-clicks"
+                      ? `${onboarding.warmupClicks}/3`
+                      : isOnboardingReady && onboarding.step === "real-warmup-clicks"
+                      ? `${onboarding.realWarmupClicks}/3`
+                      : undefined
+                  }
+                />
+              </div>
+              <div
+                className={canUsePanel("message") ? "tutorial-panel-active" : undefined}
+                data-tutorial-id="message-panel"
+              >
+                <MessageConfig
+                  config={snapshot.config}
+                  busy={busy}
+                  onSaveWarmup={confirmSaveWarmupMessages}
+                  onSaveTarget={confirmSaveTargetMessages}
+                  forcedMode={forcedMessageMode}
+                  disabled={isOnboardingReady && !canUsePanel("message")}
+                  validationError={onboardingError}
+                  tutorialNotice={
+                    isOnboardingReady && onboarding.step === "real-message"
+                      ? "A mensagem real não pode ser igual à mensagem usada no grupo alvo teste."
+                      : undefined
+                  }
+                />
+              </div>
+            </>
+          )}
         </div>
 
         <div className="secondary-column">
