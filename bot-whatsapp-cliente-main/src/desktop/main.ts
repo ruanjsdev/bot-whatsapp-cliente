@@ -15,6 +15,11 @@ let bot: BotService;
 let isQuitting = false;
 
 const isDev = !app.isPackaged;
+const singleInstanceLock = app.requestSingleInstanceLock();
+
+if (!singleInstanceLock) {
+  app.quit();
+}
 
 function createBot() {
   const dataDir = isDev ? process.cwd() : app.getPath("userData");
@@ -98,6 +103,32 @@ function registerIpc() {
     await bot.saveGroup(payload.group, payload.groupId, payload.groupName);
     return bot.getSnapshot();
   });
+  ipcMain.handle("bot:saveTestGroup", async (_event, payload: SaveGroupPayload) => {
+    await bot.saveTestGroup(payload.group, payload.groupId, payload.groupName);
+    return bot.getSnapshot();
+  });
+  ipcMain.handle("bot:saveWarmupMessageSettings", async (_event, payload: SaveMessageSettingsPayload) => {
+    try {
+      // @ts-ignore - call backend method
+      bot.setWarmupMessageSettings(payload.senderName, payload.codes);
+    } catch (err) {
+      // ignore
+    }
+    return bot.getSnapshot();
+  });
+  ipcMain.handle("bot:saveTargetMessageSettings", async (_event, payload: SaveMessageSettingsPayload) => {
+    try {
+      // @ts-ignore - call backend method
+      bot.setMessageSettings(payload.senderName, payload.codes);
+    } catch (err) {
+      // ignore
+    }
+    return bot.getSnapshot();
+  });
+  ipcMain.handle("bot:warmupGroups", async () => {
+    await bot.warmupConnection();
+    return bot.getSnapshot();
+  });
   ipcMain.handle("bot:saveCodes", async (_event, payload: SaveCodesPayload) => {
     bot.setMessageCodes(payload.codes);
     return bot.getSnapshot();
@@ -109,6 +140,8 @@ function registerIpc() {
 }
 
 app.whenReady().then(() => {
+  if (!singleInstanceLock) return;
+
   createBot();
   registerIpc();
   createWindow();
@@ -118,12 +151,18 @@ app.whenReady().then(() => {
   });
 });
 
+app.on("second-instance", () => {
+  if (!mainWindow) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.focus();
+});
+
 app.on("before-quit", async (event) => {
   if (!bot || isQuitting) return;
   isQuitting = true;
   event.preventDefault();
   try {
-    await bot.stop();
+    await bot.shutdownAndClearSession();
   } finally {
     app.exit();
   }

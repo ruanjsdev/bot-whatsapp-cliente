@@ -1,6 +1,8 @@
 import makeWASocket, {
   DisconnectReason,
-  useMultiFileAuthState
+  useMultiFileAuthState,
+  generateMessageIDV2,
+  generateWAMessageFromContent
 } from "@whiskeysockets/baileys";
 
 import P from "pino";
@@ -216,7 +218,7 @@ async function configurarGrupoSeNecessario(sock: any) {
   await inicializarEstadoDoGrupo(sock);
 }
 
-function enviarMensagensRapidas(sock: any) {
+async function enviarMensagensRapidas(sock: any) {
   if (!GRUPO_ALVO_JID) {
     console.log("❌ Grupo alvo ainda não foi configurado.");
     return;
@@ -237,26 +239,44 @@ function enviarMensagensRapidas(sock: any) {
   console.log("⚡ DISPARANDO MENSAGENS O MAIS RÁPIDO POSSÍVEL:");
   console.log("");
 
-  mensagensProntas.forEach((mensagem, index) => {
-    sock
-      .sendMessage(GRUPO_ALVO_JID, {
-        text: mensagem
-      })
-      .then(() => {
-        console.log(`✅ Mensagem ${index + 1} confirmada:`);
-        console.log(mensagem);
-        console.log("");
-      })
-      .catch((error: any) => {
-        console.log(`❌ Erro ao enviar mensagem ${index + 1}:`);
-        console.log(error);
-        console.log("");
-      });
+  for (const [index, mensagem] of mensagensProntas.entries()) {
+    const messageNumber = index + 1;
 
-    console.log(`🚀 Disparada ${index + 1}: ${mensagem}`);
-  });
+    try {
+      await relayTextMessage(sock, GRUPO_ALVO_JID, mensagem);
+      console.log(`✅ Mensagem ${messageNumber} confirmada:`);
+      console.log(mensagem);
+      console.log("");
+    } catch (error: any) {
+      console.log(`❌ Erro ao enviar mensagem ${messageNumber}:`);
+      console.log(error);
+      console.log("");
+    }
+
+    console.log(`🚀 Disparada ${messageNumber}: ${mensagem}`);
+  }
 
   console.log("");
+}
+
+async function relayTextMessage(sock: any, jid: string, mensagem: string) {
+  const messageId = generateMessageIDV2(sock.user?.id);
+  const fullMessage = generateWAMessageFromContent(
+    jid,
+    { conversation: mensagem },
+    {
+      userJid: sock.user?.id,
+      messageId,
+      timestamp: new Date()
+    }
+  );
+
+  await sock.relayMessage(jid, fullMessage.message, {
+    messageId: fullMessage.key.id,
+    useCachedGroupMetadata: true
+  });
+
+  return fullMessage;
 }
 
 async function reconfigurarMensagens() {

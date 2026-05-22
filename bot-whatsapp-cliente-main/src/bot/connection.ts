@@ -7,7 +7,7 @@ import { EventEmitter } from "events";
 import { ConfigStore } from "./config";
 import { resolveGroup, normalizarTexto } from "./group";
 import { BotLogger } from "./logger";
-import { BotConfig, BotGroup, BotSnapshot, BotStatus } from "../shared/types";
+import { BotConfig, BotGroup, BotGroupState, BotReadinessCheck, BotSnapshot, BotStatus } from "../shared/types";
 
 const originalConsoleLog = console.log.bind(console);
 console.log = (...args: unknown[]) => {
@@ -27,6 +27,8 @@ const makeWASocket = baileys.default || baileys;
 const DisconnectReason = baileys.DisconnectReason;
 const fetchLatestBaileysVersion = baileys.fetchLatestBaileysVersion;
 const useMultiFileAuthState = baileys.useMultiFileAuthState;
+const generateMessageIDV2 = baileys.generateMessageIDV2;
+const generateWAMessageFromContent = baileys.generateWAMessageFromContent;
 
 type BotServiceOptions = {
   authDir?: string;
@@ -37,31 +39,44 @@ type BotServiceOptions = {
 
 const MAX_RECONNECT_ATTEMPTS = 5;
 const RECONNECT_DELAY_MS = 3500;
+const HEALTH_CHECK_INTERVAL_MS = 25000;
+const INSTANT_BURST_DELAY_MS = 0;
+const MAX_OUTGOING_MESSAGES = 2;
+const WARMUP_MESSAGE_COUNT = 15;
 
 export class BotService extends EventEmitter {
   private sock: any;
   private status: BotStatus = "disconnected";
+  private groupState: BotGroupState = "unknown";
   private qrCode = "";
   private error = "";
   private reconnectAttempts = 0;
   private reconnectTimer?: NodeJS.Timeout;
+  private healthCheckTimer?: NodeJS.Timeout;
   private stopping = false;
   private starting?: Promise<void>;
   private activeConnectionId = 0;
   private qrReceivedInCurrentConnection = false;
   private unknownDisconnects = 0;
-  private mensagemJaEnviadaNestaAbertura = false;
   private sendCycleId = 0;
+  private activeSendCycle?: Promise<void>;
   private monitoringEnabled = false;
   private estadoInicialDoGrupoCapturado = false;
   private grupoJaFechouDepoisDoInicio = false;
   private diagnosedNotAcceptableCycles = new Set<number>();
   private codigosEscolhidos: string[] = [];
-  private mensagensProntas: string[] = [];
+  private mensagensProntasAlvo: string[] = [];
+  private mensagensProntasTeste: string[] = [];
+  private preparedTargetJid = "";
+  private preparedMessages: string[] = [];
+  private preparedRelayMessages: any[] = []; // esse aqui
+  private warmupMessagesSent = 0;
+  private warmupCompleted = false;
   private configStore: ConfigStore;
   private logger: BotLogger;
   private authDir: string;
   private groupMetadataCache = new Map<string, any>();
+  private currentUserInTargetGroup = false;
   private groups: BotGroup[] = [];
 
   constructor(options: BotServiceOptions = {}) {
@@ -70,21 +85,26 @@ export class BotService extends EventEmitter {
     this.configStore = new ConfigStore(options.configPath);
     this.logger = new BotLogger(() => this.emitSnapshot());
     const config = this.configStore.load();
-    this.codigosEscolhidos = options.initialCodes?.length
-      ? options.initialCodes
-      : config.codigosMensagens;
+    this.codigosEscolhidos = options.initialCodes?.length ? options.initialCodes : [];
     this.montarMensagens();
+    this.warmupMessagesSent = 0;
+    this.warmupCompleted = false;
   }
 
   getSnapshot(): BotSnapshot {
     return {
       status: this.status,
+      groupState: this.groupState,
       qrCode: this.qrCode,
       config: this.configStore.load(),
       groups: this.groups,
+      readinessChecks: this.getReadinessChecks(),
       logs: this.logger.all(),
       error: this.error,
-      monitoringEnabled: this.monitoringEnabled
+      monitoringEnabled: this.monitoringEnabled,
+      warmupCompleted: this.warmupCompleted,
+      warmupMessagesSent: this.warmupMessagesSent,
+      warmupRequiredMessages: WARMUP_MESSAGE_COUNT
     };
   }
   isMonitoringEnabled(): boolean {
@@ -97,8 +117,29 @@ export class BotService extends EventEmitter {
       return false;
     }
 
+    if (!this.warmupCompleted) {
+      this.logger.error("Pré-aqueça o grupo de teste antes de iniciar o bot.");
+      this.emitSnapshot();
+      return false;
+    }
+
+    if (!this.hasReadyMessages()) {
+      this.monitoringEnabled = false;
+      this.logger.error("Bot não armado: existe verificação pendente na checklist de prontidão.");
+      this.emitSnapshot();
+      return false;
+    }
+
+    if (!this.prepareSendPlan()) {
+      this.monitoringEnabled = false;
+      this.logger.error("Bot não armado: não consegui preparar o plano de disparo.");
+      this.emitSnapshot();
+      return false;
+    }
+
     await this.captureInitialGroupState();
     this.monitoringEnabled = true;
+    this.startHealthCheck();
     this.logger.success("✅ Bot ARMADO - Monitoramento ativado. Aguardando abertura do grupo...");
     this.emitSnapshot();
     return true;
@@ -106,6 +147,7 @@ export class BotService extends EventEmitter {
 
   disableMonitoring(): void {
     this.monitoringEnabled = false;
+    this.clearHealthCheckTimer();
     this.logger.info("⏹️ Monitoramento desativado (Parou de escutar aberturas).");
     this.emitSnapshot();
   }
@@ -141,6 +183,7 @@ export class BotService extends EventEmitter {
     this.stopping = true;
     this.activeConnectionId += 1;
     this.clearReconnectTimer();
+    this.clearHealthCheckTimer();
     this.reconnectAttempts = 0;
     this.qrCode = "";
 
@@ -157,8 +200,21 @@ export class BotService extends EventEmitter {
     }
 
     this.sock = undefined;
+    this.groupState = "unknown";
+    this.currentUserInTargetGroup = false;
+    this.preparedTargetJid = "";
+    this.preparedMessages = [];
+    this.preparedRelayMessages = []; // esse aqui
     this.setStatus("disconnected");
     this.logger.info("Bot parado.");
+  }
+
+  async shutdownAndClearSession() {
+    await this.logoutAndClearSession();
+    this.qrCode = "";
+    this.error = "";
+    this.logger.warning("Sessão/auth apagada no fechamento. Na próxima abertura será necessário ler um novo QR Code.");
+    this.emitSnapshot();
   }
 
   async restart() {
@@ -167,17 +223,18 @@ export class BotService extends EventEmitter {
       return;
     }
 
+    const shouldRestoreMonitoring = this.monitoringEnabled;
     this.logger.info("Reiniciando conexão...");
     await this.stop();
+    this.monitoringEnabled = shouldRestoreMonitoring;
     await this.start();
   }
 
   async clearSession() {
-    await this.stop();
-    this.removeAuthDir();
+    await this.logoutAndClearSession();
     this.qrCode = "";
     this.error = "";
-    this.logger.warning("Sessão/auth apagada. Gerando um novo QR Code.");
+    this.logger.warning("Sessão/auth apagada e logout solicitado. Gerando um novo QR Code.");
     this.emitSnapshot();
     await this.start();
   }
@@ -186,6 +243,11 @@ export class BotService extends EventEmitter {
     const config = groupId
       ? this.configStore.saveGroupById(groupId, groupName || group)
       : this.configStore.saveGroup(group);
+    this.groupState = "unknown";
+    this.currentUserInTargetGroup = false;
+    this.preparedTargetJid = "";
+    this.preparedMessages = [];
+    this.preparedRelayMessages = [];
     this.logger.success(`Grupo alterado para: ${config.grupoAlvoNome || config.grupoAlvoJid}`);
 
     if (this.sock && this.status === "connected") {
@@ -193,6 +255,177 @@ export class BotService extends EventEmitter {
     }
 
     this.emitSnapshot();
+  }
+
+  async saveTestGroup(group: string, groupId?: string, groupName?: string) {
+    this.resetWarmupState();
+    const config = groupId
+      ? this.configStore.saveTestGroupById(groupId, groupName || group)
+      : this.configStore.saveTestGroup(group);
+    this.logger.success(`Grupo de teste salvo: ${config.grupoTesteNome || config.grupoTesteJid}`);
+    this.emitSnapshot();
+  }
+
+  async warmupConnection(message?: string): Promise<boolean> {
+    if (!this.sock || this.status !== "connected") {
+      this.logger.warning("Conecte o WhatsApp antes de aquecer o bot.");
+      return false;
+    }
+
+    const config = this.configStore.load();
+    if (!config.grupoTesteJid && !config.grupoTesteNome) {
+      this.logger.warning("Salve um grupo de teste para aquecimento antes de iniciar.");
+      return false;
+    }
+
+    if (message) this.logger.info(message);
+
+    const warmupGroup = await this.resolveWarmupTarget(config);
+    if (!warmupGroup) {
+      this.logger.warning("Não foi possível resolver o grupo de teste para aquecimento.");
+      return false;
+    }
+
+    // ensure warmup messages are loaded from config
+    this.syncMessagesFromConfig();
+
+    const warmupMessages = this.buildWarmupMessages();
+    this.warmupMessagesSent = 0;
+    this.warmupCompleted = false;
+
+    // send an initial marker message indicating the start of warmup with weekday, date and time
+    try {
+      const now = new Date();
+      const timestamp = now.toLocaleString("pt-BR", {
+        weekday: "long",
+        day: "2-digit",
+        month: "2-digit",
+        year: "numeric",
+        hour: "2-digit",
+        minute: "2-digit"
+      });
+      const initialMsg = `INICIANDO AQUECIMENTO 🔽 ${timestamp}`;
+      await this.relayTextMessage(this.sock, warmupGroup.jid, initialMsg);
+      this.logger.info("Mensagem inicial de aquecimento enviada.");
+    } catch (err) {
+      this.logger.warning(`Falha ao enviar mensagem inicial de aquecimento: ${this.getErrorMessage(err)}`);
+    }
+
+    // send warmup messages as fast as possible using low-level relay messages
+    const relayMessages = warmupMessages.map((mensagem) => this.buildRelayTextMessage(this.sock, warmupGroup.jid, mensagem));
+
+    for (const [index, fullMessage] of relayMessages.entries()) {
+      const messageNumber = index + 1;
+      this.logger.info(`Enviando (rápido) mensagem de aquecimento ${messageNumber}/${WARMUP_MESSAGE_COUNT} para o grupo de teste.`);
+      try {
+        // send without retries/delays to be as fast as possible
+        await this.relayPreparedMessage(this.sock, warmupGroup.jid, fullMessage);
+        this.warmupMessagesSent += 1;
+        this.logger.success(`Aquecimento ${messageNumber} enviado (rápido).`);
+      } catch (err) {
+        this.logger.warning(`Falha no envio de aquecimento ${messageNumber}: ${this.getErrorMessage(err)}. Continuando...`);
+      }
+
+      // emit progress after each send
+      this.emitSnapshot();
+    }
+
+    if (config.grupoAlvoJid) {
+      await this.refreshGroupMetadata(config.grupoAlvoJid);
+    }
+
+    this.warmupCompleted = this.warmupMessagesSent >= WARMUP_MESSAGE_COUNT;
+    if (this.warmupCompleted) {
+      this.logger.success(`Aquecimento concluído: ${this.warmupMessagesSent}/${WARMUP_MESSAGE_COUNT} mensagens enviadas no grupo de teste.`);
+    } else {
+      this.logger.warning(`Aquecimento incompleto: ${this.warmupMessagesSent}/${WARMUP_MESSAGE_COUNT} mensagens enviadas.`);
+    }
+
+    this.emitSnapshot();
+    return this.warmupCompleted;
+  }
+
+  private async resolveWarmupTarget(config: BotConfig) {
+    try {
+      const resolved = await resolveGroup(this.sock, {
+        jid: config.grupoTesteJid,
+        name: config.grupoTesteNome
+      });
+
+      if (resolved.jid) {
+        return { jid: resolved.jid, label: "grupo de teste" };
+      }
+    } catch (error) {
+      this.logger.warning(`Não consegui resolver o grupo de teste: ${this.getErrorMessage(error)}`);
+    }
+
+    return undefined;
+  }
+
+  private buildWarmupMessages() {
+    const baseMessages = this.mensagensProntasTeste.length
+      ? this.mensagensProntasTeste
+      : ["Aquecimento"].map((item) => item);
+
+    return Array.from({ length: WARMUP_MESSAGE_COUNT }, (_, index) => {
+      const message = baseMessages[index % baseMessages.length];
+      return `${message} (aquecimento ${index + 1})`;
+    });
+  }
+
+  private async sendWarmupMessage(jid: string, mensagem: string, messageNumber: number) {
+    const maxAttempts = 3;
+    const delays = [75, 150, 250];
+
+    for (let attempt = 0; attempt <= maxAttempts; attempt += 1) {
+      try {
+        await this.relayTextMessage(this.sock, jid, mensagem);
+        this.logger.success(`Aquecimento ${messageNumber} enviado.`);
+        return true;
+      } catch (error) {
+        const message = this.getErrorMessage(error);
+        if (attempt === maxAttempts) {
+          this.logger.error(`Falha no aquecimento ${messageNumber}: ${message}`);
+          return false;
+        }
+
+        this.logger.warning(`Aquecimento ${messageNumber} falhou (${message}). Retentando...`);
+        await this.delay(delays[attempt] || 150);
+      }
+    }
+
+    return false;
+  }
+
+  private async prewarmGroup(jid: string, label: string) {
+    const config = this.configStore.load();
+    this.logger.info(`Aquecer ${label}: ${jid}`);
+
+    const metadata = await this.refreshGroupMetadata(jid);
+    if (!metadata) {
+      throw new Error(`Não foi possível obter metadata do ${label}.`);
+    }
+
+    if (label === "grupo alvo") {
+      const currentUserIds = this.getCurrentUserIds();
+      const participant = metadata.participants?.find((item: any) => {
+        const id = String(item.id || "");
+        const number = id.split(":")[0].split("@")[0];
+        return currentUserIds.includes(id) || currentUserIds.includes(`${number}@s.whatsapp.net`);
+      });
+
+      if (!participant) {
+        this.currentUserInTargetGroup = false;
+        this.logger.warning("A conta conectada não está no grupo alvo. Verifique a participação antes de enviar.");
+      } else {
+        this.currentUserInTargetGroup = true;
+      }
+
+      this.groupState = metadata.announce === true ? "closed" : "open";
+    }
+
+    this.logger.success(`Aquecimento concluído para ${label}: ${metadata.subject || jid}`);
+    return true;
   }
 
   async refreshGroups() {
@@ -207,29 +440,35 @@ export class BotService extends EventEmitter {
   }
 
   setMessageCodes(codes: string[]) {
+    // Set target (alvo) message codes. Do NOT reset warmup completion.
     this.codigosEscolhidos = codes.map((item) => item.trim().toUpperCase()).filter(Boolean);
     this.montarMensagens();
-    this.configStore.save({ codigosMensagens: this.codigosEscolhidos });
-    this.mensagemJaEnviadaNestaAbertura = false;
-    this.logger.success("Mensagens atualizadas.");
+    this.configStore.save({ codigosMensagensAlvo: this.codigosEscolhidos });
+    this.prepareSendPlan();
+    this.logger.success("Mensagens do grupo alvo atualizadas.");
   }
 
   setMessageSettings(senderName: string, codes: string[]) {
+    // Update target (alvo) message settings. Do NOT reset warmup completion.
     this.codigosEscolhidos = codes.map((item) => item.trim().toUpperCase()).filter(Boolean);
     this.configStore.save({
       nomeEnvio: senderName.trim(),
-      codigosMensagens: this.codigosEscolhidos
+      codigosMensagensAlvo: this.codigosEscolhidos
     });
     this.montarMensagens();
-    this.mensagemJaEnviadaNestaAbertura = false;
+    this.prepareSendPlan();
     this.logger.success(
-      `Nome e mensagens atualizados: ${this.codigosEscolhidos.length} mensagens prontas (${this.codigosEscolhidos.join(", ")}).`
+      `Nome e mensagens do grupo alvo atualizados: ${this.codigosEscolhidos.length} mensagens prontas (${this.codigosEscolhidos.join(", ")}).`
     );
   }
 
-  resetSendingLock() {
-    this.mensagemJaEnviadaNestaAbertura = false;
-    this.logger.info("Envio resetado. O bot pode enviar novamente.");
+  // Save warmup (teste) message settings. This resets the warmup state.
+  setWarmupMessageSettings(senderName: string, codes: string[]) {
+    this.resetWarmupState();
+    const nextCodes = codes.map((item) => item.trim().toUpperCase()).filter(Boolean);
+    this.configStore.save({ nomeEnvio: senderName.trim(), codigosMensagensTeste: nextCodes });
+    this.montarMensagens();
+    this.logger.success(`Mensagens de aquecimento atualizadas: ${nextCodes.length} mensagens.`);
   }
 
   private async connect() {
@@ -237,8 +476,6 @@ export class BotService extends EventEmitter {
     this.qrReceivedInCurrentConnection = false;
     this.estadoInicialDoGrupoCapturado = false;
     this.grupoJaFechouDepoisDoInicio = false;
-    this.mensagemJaEnviadaNestaAbertura = false;
-    this.monitoringEnabled = false;
     this.clearReconnectTimer();
     this.setStatus(this.reconnectAttempts > 0 ? "reconnecting" : "connecting");
     this.error = "";
@@ -293,6 +530,12 @@ export class BotService extends EventEmitter {
       try {
         await this.loadGroups();
         await this.resolveConfiguredGroup();
+        void this.prewarmConnection("Pré-aquecendo sessão após conexão...");
+        if (this.monitoringEnabled) {
+          await this.captureInitialGroupState();
+          this.startHealthCheck();
+          this.logger.success("Monitoramento restaurado após reconexão.");
+        }
         this.logger.info("Aguardando abertura do grupo.");
       } catch (error) {
         this.error = this.getErrorMessage(error);
@@ -303,6 +546,7 @@ export class BotService extends EventEmitter {
 
     if (connection === "close") {
       this.sock = undefined;
+      this.clearHealthCheckTimer();
       if (this.stopping) return;
 
       const statusCode = (lastDisconnect?.error as Boom)?.output?.statusCode;
@@ -368,6 +612,7 @@ export class BotService extends EventEmitter {
     });
 
     await this.refreshGroupMetadata(nextConfig.grupoAlvoJid);
+    this.prepareSendPlan();
 
     this.logger.success(`Grupo configurado: ${nextConfig.grupoAlvoNome}`);
   }
@@ -402,6 +647,7 @@ export class BotService extends EventEmitter {
       if (!metadata) return;
 
       const isGroupClosed = metadata.announce === true;
+      this.groupState = isGroupClosed ? "closed" : "open";
       
       if (isGroupClosed) {
         this.estadoInicialDoGrupoCapturado = true;
@@ -450,14 +696,17 @@ export class BotService extends EventEmitter {
       if (!update?.id || update.id !== config.grupoAlvoJid) continue;
 
       if (update.announce === true) {
+        this.groupState = "closed";
         this.grupoJaFechouDepoisDoInicio = true;
         this.sendCycleId += 1;
-        this.mensagemJaEnviadaNestaAbertura = false;
         this.logger.info("🔒 Grupo FECHADO. Bot armado para próxima abertura.");
+        this.prepareSendPlan();
+        this.logger.info("Plano de disparo preparado em memória para a próxima abertura.");
         return;
       }
 
       if (update.announce === false) {
+        this.groupState = "open";
         if (!this.grupoJaFechouDepoisDoInicio) {
           this.logger.info("⚠️ Grupo já estava aberto desde o início. Aguardando próximo ciclo de fechamento e reabertura...");
           return;
@@ -475,105 +724,335 @@ export class BotService extends EventEmitter {
     if (connectionId !== this.activeConnectionId) return;
     if (!this.monitoringEnabled) return;
 
-    const msg = messages?.[0];
     const config = this.configStore.load();
 
-    if (!msg?.message || !msg.key?.remoteJid || !config.grupoAlvoJid) return;
-    if (msg.key.remoteJid !== config.grupoAlvoJid) return;
+    if (!config.grupoAlvoJid) return;
 
-    const texto =
-      msg.message.conversation ||
-      msg.message.extendedTextMessage?.text ||
-      msg.message.imageMessage?.caption ||
-      msg.message.videoMessage?.caption ||
-      "";
+    for (const msg of messages || []) {
+      if (!msg?.message || !msg.key?.remoteJid) continue;
+      if (msg.key.remoteJid !== config.grupoAlvoJid) continue;
 
-    if (!texto) return;
+      const texto =
+        msg.message.conversation ||
+        msg.message.extendedTextMessage?.text ||
+        msg.message.imageMessage?.caption ||
+        msg.message.videoMessage?.caption ||
+        "";
 
-    const palavrasAbertura = [
-      "abriu",
-      "aberto",
-      "liberado",
-      "liberou",
-      "pode mandar",
-      "podem mandar",
-      "grupo aberto"
-    ];
+      if (!texto) continue;
 
-    const detectouAbertura = palavrasAbertura.some((palavra) =>
-      normalizarTexto(texto).includes(normalizarTexto(palavra))
-    );
+      const palavrasAbertura = [
+        "abriu",
+        "aberto",
+        "liberado",
+        "liberou",
+        "pode mandar",
+        "podem mandar",
+        "grupo aberto"
+      ];
 
-    if (detectouAbertura) {
-      if (!this.grupoJaFechouDepoisDoInicio) {
-        this.logger.info(
-          "Palavra de abertura detectada, mas o grupo ainda não fechou após o bot iniciar. Nenhuma mensagem enviada."
-        );
+      const detectouAbertura = palavrasAbertura.some((palavra) =>
+        normalizarTexto(texto).includes(normalizarTexto(palavra))
+      );
+
+      if (detectouAbertura) {
+        if (!this.grupoJaFechouDepoisDoInicio) {
+          this.logger.info(
+            "Palavra de abertura detectada, mas o grupo ainda não fechou após o bot iniciar. Nenhuma mensagem enviada."
+          );
+          return;
+        }
+
+        const cycleId = ++this.sendCycleId;
+        this.grupoJaFechouDepoisDoInicio = false;
+        this.logger.info("Palavra de abertura detectada após fechamento. Disparando mensagens.");
+        this.enviarMensagensRapidas(cycleId);
         return;
       }
-
-      const cycleId = ++this.sendCycleId;
-      this.grupoJaFechouDepoisDoInicio = false;
-      this.logger.info("Palavra de abertura detectada após fechamento. Disparando mensagens.");
-      this.enviarMensagensRapidas(cycleId);
     }
   }
   private enviarMensagensRapidas(cycleId: number) {
-    const config = this.configStore.load();
-    this.syncMessagesFromConfig();
+    if (!this.preparedTargetJid || !this.preparedMessages.length) {
+      this.prepareSendPlan();
+    }
 
-    if (!config.grupoAlvoJid) {
+    if (!this.preparedTargetJid) {
       this.logger.error("Grupo alvo ainda não foi configurado.");
       return;
     }
 
-    if (!this.mensagensProntas.length) {
+    if (!this.preparedMessages.length) {
       this.logger.error("Nenhuma mensagem está pronta.");
       return;
     }
 
-    if (this.mensagemJaEnviadaNestaAbertura) {
-      this.logger.warning("Já enviei nesta abertura. Bloqueando duplicidade.");
-      return;
+    let mensagens = [...this.preparedMessages];
+
+    if (mensagens.length > MAX_OUTGOING_MESSAGES) {
+      mensagens = mensagens.slice(0, MAX_OUTGOING_MESSAGES);
+      this.logger.warning(
+        `Limite máximo de ${MAX_OUTGOING_MESSAGES} mensagens ativo. Enviando apenas as duas primeiras.`
+      );
     }
 
-    this.mensagemJaEnviadaNestaAbertura = true;
-    const mensagens = [...this.mensagensProntas];
+    if (this.activeSendCycle) {
+      this.logger.warning("Já existe um disparo em andamento. Mantendo apenas o ciclo mais novo.");
+    }
 
-    mensagens.forEach((mensagem, index) => {
-      setTimeout(() => {
-        if (cycleId !== this.sendCycleId) return;
-        this.sendMessageWithRetry(config.grupoAlvoJid, mensagem, index + 1, cycleId).catch((error) =>
-          this.logger.error(`Erro inesperado no envio ${index + 1}: ${this.getErrorMessage(error)}`)
-        );
-      }, index * 80);
+    this.activeSendCycle = this.sendAggressiveTargetSequence(this.preparedTargetJid, mensagens, cycleId).finally(() => {
+      if (cycleId === this.sendCycleId) {
+        this.activeSendCycle = undefined;
+      }
     });
 
     this.logger.info(
-      `Modo ultra rápido: ${mensagens.length} mensagens separadas disparadas com intervalo de 80ms: ${mensagens.join(" | ")}`
+      `Modo instantâneo agressivo: ${mensagens.length} mensagens disparadas juntas com ${INSTANT_BURST_DELAY_MS}ms: ${mensagens.join(" | ")}`
     );
   }
 
+  private async sendFastSequence(jid: string, mensagens: string[], cycleId: number) {
+    try {
+      const sock = this.sock;
+      if (!sock) {
+        this.logger.error("Não há conexão ativa no momento do disparo.");
+        return;
+      }
+
+      if (mensagens.length === 1) {
+        const sent = await this.sendSingleInstant(sock, jid, mensagens[0], cycleId);
+        if (sent) {
+          this.logger.success("Disparo concluído: 1/1 mensagem confirmada.");
+        } else {
+          this.logger.warning("Disparo terminou com atenção: 0/1 mensagem confirmada.");
+        }
+        return;
+      }
+
+      let confirmed = 0;
+
+      for (const [index, mensagem] of mensagens.entries()) {
+        const messageNumber = index + 1;
+        if (cycleId !== this.sendCycleId) break;
+
+        try {
+          await this.relayPreparedTextMessage(sock, jid, mensagem, index);
+          this.logger.success(`Mensagem ${messageNumber} confirmada: ${mensagem}`);
+          confirmed += 1;
+        } catch (error) {
+          const message = this.getErrorMessage(error);
+          this.logger.warning(`Mensagem ${messageNumber} falhou no tiro instantâneo (${message}). Retentando...`);
+
+          if (!this.isRetryableSendError(message)) {
+            this.logger.error(`Erro ao enviar mensagem ${messageNumber}: ${message}`);
+            break;
+          }
+
+          const retried = await this.sendMessageWithRetry(jid, mensagem, messageNumber, cycleId, true);
+          if (!retried) {
+            break;
+          }
+
+          confirmed += 1;
+        }
+
+        if (messageNumber === 1 && confirmed === 1 && mensagens.length > 1) {
+          this.logger.info("Mensagem 1 confirmada. Enviando mensagem 2 imediatamente.");
+        }
+      }
+
+      if (confirmed === mensagens.length) {
+        this.logger.success(`Disparo concluído: ${confirmed}/${mensagens.length} mensagens confirmadas.`);
+      } else {
+        this.logger.warning(`Disparo terminou com atenção: ${confirmed}/${mensagens.length} mensagens confirmadas.`);
+      }
+    } catch (error) {
+      this.logger.error(`Erro inesperado no disparo turbo: ${this.getErrorMessage(error)}`);
+    }
+  }
+
+  private async sendAggressiveTargetSequence(jid: string, mensagens: string[], cycleId: number) {
+    // aggressive, low-latency send for the real target group
+    try {
+      const sock = this.sock;
+      if (!sock) {
+        this.logger.error("Não há conexão ativa no momento do disparo.");
+        return;
+      }
+
+      // use prepared relay messages if available
+      const relayMessages = this.preparedRelayMessages && this.preparedRelayMessages.length
+        ? this.preparedRelayMessages
+        : mensagens.map((m) => this.buildRelayTextMessage(sock, jid, m));
+
+      const quickRetries = [0, 50, 120]; // fast retries in ms
+
+      let confirmed = 0;
+      for (const [index, fullMessage] of relayMessages.entries()) {
+        const messageNumber = index + 1;
+        if (cycleId !== this.sendCycleId) break;
+
+        let sent = false;
+        for (let attempt = 0; attempt < quickRetries.length && !sent; attempt += 1) {
+          try {
+            if (attempt > 0) await this.delay(quickRetries[attempt]);
+            await this.relayPreparedMessage(sock, jid, fullMessage);
+            sent = true;
+            confirmed += 1;
+            this.logger.success(`Mensagem alvo ${messageNumber} enviada (rápido).`);
+          } catch (err) {
+            const message = this.getErrorMessage(err);
+            this.logger.warning(`Tentativa rápida ${attempt + 1} falhou para mensagem ${messageNumber}: ${message}`);
+            // if non-retryable, break quick retry loop
+            if (!this.isRetryableSendError(message)) break;
+          }
+        }
+
+        if (!sent) {
+          this.logger.warning(`Mensagem alvo ${messageNumber} não enviada após tentativas rápidas.`);
+        }
+
+        // send sequentially: wait for send before proceeding
+        this.emitSnapshot();
+      }
+
+      if (confirmed === mensagens.length) {
+        this.logger.success(`Disparo concluído: ${confirmed}/${mensagens.length} mensagens confirmadas.`);
+      } else {
+        this.logger.warning(`Disparo terminou com atenção: ${confirmed}/${mensagens.length} mensagens confirmadas.`);
+      }
+    } catch (error) {
+      this.logger.error(`Erro inesperado no disparo agressivo: ${this.getErrorMessage(error)}`);
+    }
+  }
+
+  private async sendSingleInstant(sock: any, jid: string, mensagem: string, cycleId: number) {
+    if (cycleId !== this.sendCycleId) return false;
+
+    try {
+      await this.relayPreparedTextMessage(sock, jid, mensagem, 0);
+      this.logger.success(`Mensagem 1 confirmada: ${mensagem}`);
+      return true;
+    } catch (error) {
+      const message = this.getErrorMessage(error);
+      this.logger.warning(`Mensagem 1 falhou no tiro instantâneo (${message}). Retentando...`);
+
+      if (!this.isRetryableSendError(message)) {
+        this.logger.error(`Erro ao enviar mensagem 1: ${message}`);
+        return false;
+      }
+
+      return this.sendMessageWithRetry(jid, mensagem, 1, cycleId, true);
+    }
+  }
+
+  private async sendBurstMessage(
+    jid: string,
+    mensagem: string,
+    messageNumber: number,
+    cycleId: number,
+    initialDelay: number
+  ) {
+    if (initialDelay > 0) {
+      await this.delay(initialDelay);
+    }
+
+    if (cycleId !== this.sendCycleId) return false;
+
+    const sent = await this.sendMessageWithRetry(jid, mensagem, messageNumber, cycleId);
+    if (!sent) {
+      this.logger.warning(
+        `Mensagem ${messageNumber} não confirmou mesmo na rajada instantânea.`
+      );
+    }
+
+    return sent;
+  }
+
+  private async relayTextMessage(sock: any, jid: string, mensagem: string) {
+    const fullMessage = this.buildRelayTextMessage(sock, jid, mensagem);
+    await this.relayPreparedMessage(sock, jid, fullMessage);
+    return fullMessage;
+  }
+
+  private async relayPreparedTextMessage(sock: any, jid: string, mensagem: string, index: number) {
+    const fullMessage = this.preparedRelayMessages[index] || this.buildRelayTextMessage(sock, jid, mensagem);
+    await this.relayPreparedMessage(sock, jid, fullMessage);
+    return fullMessage;
+  }
+
+  private buildRelayTextMessage(sock: any, jid: string, mensagem: string) {
+    const messageId = generateMessageIDV2(sock.user?.id);
+    return generateWAMessageFromContent(
+      jid,
+      { conversation: mensagem },
+      {
+        userJid: sock.user?.id,
+        messageId,
+        timestamp: new Date()
+      }
+    );
+  }
+
+  private async relayPreparedMessage(sock: any, jid: string, fullMessage: any) {
+    await sock.relayMessage(jid, fullMessage.message, {
+      messageId: fullMessage.key.id,
+      useCachedGroupMetadata: true
+    });
+  }
+
   private montarMensagens() {
-    const { nomeEnvio } = this.configStore.load();
-    this.mensagensProntas = this.codigosEscolhidos.map((codigo) => `${nomeEnvio} ${codigo}`);
+    const { nomeEnvio, codigosMensagensAlvo, codigosMensagensTeste } = this.configStore.load();
+    this.mensagensProntasAlvo = (codigosMensagensAlvo || [])
+      .map((codigo) => `${nomeEnvio} ${codigo}`)
+      .filter(Boolean);
+    this.mensagensProntasTeste = (codigosMensagensTeste || [])
+      .map((codigo) => `${nomeEnvio} ${codigo}`)
+      .filter(Boolean);
   }
 
   private syncMessagesFromConfig() {
-    const config = this.configStore.load();
-    this.codigosEscolhidos = config.codigosMensagens;
+    // reload messages from config for both alvo and teste
     this.montarMensagens();
+  }
+
+  private prepareSendPlan() {
+    const config = this.configStore.load();
+    this.syncMessagesFromConfig();
+
+    this.preparedTargetJid = config.grupoAlvoJid;
+    this.preparedMessages = [...this.mensagensProntasAlvo];
+
+    if (this.preparedMessages.length > MAX_OUTGOING_MESSAGES) {
+      this.preparedMessages = this.preparedMessages.slice(0, MAX_OUTGOING_MESSAGES);
+      this.logger.warning(
+        `Limite máximo de ${MAX_OUTGOING_MESSAGES} mensagens ativo. As duas primeiras mensagens serão preparadas para envio.`
+      );
+    }
+
+    this.preparedRelayMessages =
+      this.sock && this.preparedTargetJid
+        ? this.preparedMessages.map((mensagem) => this.buildRelayTextMessage(this.sock, this.preparedTargetJid, mensagem))
+        : [];
+
+    return Boolean(this.preparedTargetJid && this.preparedMessages.length);
+  }
+
+  private resetWarmupState() {
+    this.warmupMessagesSent = 0;
+    this.warmupCompleted = false;
+    this.emitSnapshot();
   }
 
   private async sendMessageWithRetry(
     jid: string,
     mensagem: string,
     messageNumber: number,
-    cycleId: number
+    cycleId: number,
+    skipInstantAttempt = false
   ) {
-    const delays = [100, 120, 160, 240, 320, 520, 760, 1100, 1600, 2400, 3200, 6400];
+    const delays = [15, 25, 40, 65, 95, 140, 210, 320, 480, 720, 1100, 1700, 2600];
 
-    for (let attempt = 0; attempt <= delays.length; attempt += 1) {
+    for (let attempt = skipInstantAttempt ? 1 : 0; attempt <= delays.length; attempt += 1) {
       if (cycleId !== this.sendCycleId) {
         this.logger.warning(`Mensagem ${messageNumber} cancelada porque começou outro ciclo de abertura.`);
         return false;
@@ -593,7 +1072,7 @@ export class BotService extends EventEmitter {
           this.logger.info(`Tentando novamente mensagem ${messageNumber} (${attempt + 1}/${delays.length + 1}).`);
         }
 
-        await this.sock.sendMessage(jid, { text: mensagem });
+        await this.relayTextMessage(this.sock, jid, mensagem);
         this.logger.success(`Mensagem ${messageNumber} confirmada: ${mensagem}`);
         return true;
       } catch (error) {
@@ -625,6 +1104,123 @@ export class BotService extends EventEmitter {
       normalizedMessage.includes("timeout") ||
       normalizedMessage.includes("temporarily")
     );
+  }
+
+  private startHealthCheck() {
+    this.clearHealthCheckTimer();
+    this.healthCheckTimer = setInterval(() => {
+      void this.runHealthCheck();
+    }, HEALTH_CHECK_INTERVAL_MS);
+  }
+
+  private async runHealthCheck() {
+    if (!this.monitoringEnabled || this.status !== "connected" || !this.sock) return;
+
+    try {
+      await this.prewarmConnection();
+    } catch (error) {
+      this.logger.warning(`Health check falhou: ${this.getErrorMessage(error)}. Reiniciando conexão.`);
+      await this.restart();
+    }
+  }
+
+  private async prewarmConnection(message?: string) {
+    if (!this.sock || this.status !== "connected") return false;
+
+    const config = this.configStore.load();
+    if (!config.grupoAlvoJid) return false;
+
+    if (message) this.logger.info(message);
+
+    this.syncMessagesFromConfig();
+    const metadata = await this.refreshGroupMetadata(config.grupoAlvoJid);
+    if (metadata?.announce === true) {
+      this.groupState = "closed";
+    } else if (metadata?.announce === false) {
+      this.groupState = "open";
+    }
+    const currentUserIds = this.getCurrentUserIds();
+    const currentUserNumbers = currentUserIds.map((id) => id.split(":")[0].split("@")[0]).filter(Boolean);
+    const participant = metadata?.participants?.find((item: any) => {
+      const id = String(item.id || "");
+      const number = id.split(":")[0].split("@")[0];
+      return currentUserIds.includes(id) || currentUserNumbers.includes(number);
+    });
+
+    if (!participant) {
+      this.currentUserInTargetGroup = false;
+      this.logger.warning("A conta conectada não apareceu na lista do grupo alvo. Verifique se ela ainda está no grupo.");
+      return false;
+    }
+
+    this.currentUserInTargetGroup = true;
+    return true;
+  }
+
+  private getReadinessChecks(): BotReadinessCheck[] {
+    const config = this.configStore.load();
+
+    return [
+      {
+        id: "whatsapp",
+        label: "WhatsApp conectado",
+        ok: this.status === "connected"
+      },
+      {
+        id: "test_group",
+        label: "Grupo de teste configurado",
+        ok: Boolean(config.grupoTesteJid)
+      },
+      {
+        id: "group",
+        label: "Grupo configurado",
+        ok: Boolean(config.grupoAlvoJid)
+      },
+      {
+        id: "participant",
+        label: "Conta confirmada no grupo",
+        ok: this.currentUserInTargetGroup
+      },
+      {
+        id: "messages",
+        label: "Mensagens prontas",
+        ok: this.hasReadyMessages()
+      },
+      {
+        id: "group_state",
+        label: "Estado do grupo validado",
+        ok: this.groupState !== "unknown"
+      },
+      {
+        id: "armed",
+        label: "Bot armado para disparar",
+        ok: this.monitoringEnabled
+      }
+    ];
+  }
+
+  private hasReadyMessages() {
+    const config = this.configStore.load();
+    return (config.codigosMensagensAlvo || []).some((item) => item.trim());
+  }
+
+  private async waitUntilGroupAcceptsMessages(jid: string, cycleId: number) {
+    const checks = [0, 60, 90, 120, 180, 240, 320, 420, 560];
+
+    for (const wait of checks) {
+      if (cycleId !== this.sendCycleId) return false;
+      if (wait > 0) await this.delay(wait);
+
+      try {
+        const metadata = await this.refreshGroupMetadata(jid);
+        if (metadata?.announce === false) return true;
+      } catch {
+        return true;
+      }
+    }
+
+    this.logger.warning("O evento de abertura chegou, mas o servidor ainda pode estar atualizando o grupo.");
+    return false;
   }
 
   private async diagnoseNotAcceptable(jid: string, cycleId: number) {
@@ -678,6 +1274,35 @@ export class BotService extends EventEmitter {
 
   private hasAuthSession() {
     return fs.existsSync(path.join(this.authDir, "creds.json"));
+  }
+
+  private async logoutAndClearSession() {
+    if (this.sock) {
+      try {
+        this.logger.info("Solicitando logout ao WhatsApp para remover este dispositivo conectado...");
+        await this.sock.logout?.();
+        this.logger.success("Logout solicitado ao WhatsApp.");
+      } catch (error) {
+        this.logger.warning(
+          `Não foi possível confirmar logout no WhatsApp: ${this.getErrorMessage(error)}. Limpando sessão local mesmo assim.`
+        );
+      }
+    }
+
+    if (this.isRunning()) {
+      await this.stop();
+    } else {
+      this.monitoringEnabled = false;
+      this.clearReconnectTimer();
+      this.clearHealthCheckTimer();
+    }
+
+    this.removeAuthDir();
+    this.groupState = "unknown";
+    this.currentUserInTargetGroup = false;
+    this.preparedTargetJid = "";
+    this.preparedMessages = [];
+    this.preparedRelayMessages = [];
   }
 
   private isFatalRuntimeError(errorMessage = "") {
@@ -757,6 +1382,13 @@ export class BotService extends EventEmitter {
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = undefined;
+    }
+  }
+
+  private clearHealthCheckTimer() {
+    if (this.healthCheckTimer) {
+      clearInterval(this.healthCheckTimer);
+      this.healthCheckTimer = undefined;
     }
   }
 

@@ -146,6 +146,73 @@ h2 {
   line-height: 1.55;
 }
 
+.readiness-strip {
+  display: grid;
+  gap: 5px;
+  margin-top: 16px;
+  padding: 12px;
+  border: 1px solid rgba(88, 166, 255, 0.2);
+  border-radius: 8px;
+  background: rgba(13, 17, 23, 0.62);
+}
+
+.readiness-strip span {
+  color: #8b949e;
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.readiness-strip strong {
+  color: #e6edf3;
+  font-size: 0.92rem;
+  line-height: 1.4;
+}
+
+.readiness-list {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.ready-check {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 32px;
+  padding: 7px 9px;
+  border: 1px solid rgba(139, 148, 158, 0.18);
+  border-radius: 8px;
+  color: #c9d1d9;
+  background: rgba(13, 17, 23, 0.4);
+  font-size: 0.82rem;
+  line-height: 1.25;
+}
+
+.ready-check b {
+  flex: 0 0 auto;
+  color: #8b949e;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+}
+
+.ready-check.ok {
+  border-color: rgba(63, 185, 80, 0.28);
+}
+
+.ready-check.ok b {
+  color: #3fb950;
+}
+
+.ready-check.pending {
+  border-color: rgba(210, 153, 34, 0.28);
+}
+
+.ready-check.pending b {
+  color: #d29922;
+}
+
 .button-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -260,6 +327,33 @@ h2 {
   opacity: 0.55;
 }
 
+.mode-switch {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.mode-switch label {
+  color: #c9d1d9;
+  font-size: 0.92rem;
+}
+
+.danger-notice,
+.form-error {
+  margin-bottom: 12px;
+  padding: 12px;
+  border: 1px solid rgba(248, 81, 73, 0.5);
+  border-radius: 8px;
+  color: #ffd8d4;
+  background: rgba(73, 18, 15, 0.72);
+  line-height: 1.45;
+}
+
+.form-error {
+  font-size: 0.92rem;
+}
+
 .message-preview {
   display: grid;
   gap: 6px;
@@ -330,6 +424,89 @@ h2 {
   place-items: center;
   padding: 20px;
   background: rgba(1, 4, 9, 0.72);
+}
+
+.tutorial-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  background: rgba(1, 4, 9, 0.78);
+  pointer-events: auto;
+}
+
+.tutorial-panel-active {
+  position: relative;
+  z-index: 42;
+  pointer-events: auto;
+}
+
+.tutorial-panel-active > .panel {
+  border-color: rgba(88, 166, 255, 0.95);
+  box-shadow:
+    0 0 0 3px rgba(88, 166, 255, 0.28),
+    0 0 36px rgba(88, 166, 255, 0.28),
+    0 24px 80px rgba(1, 4, 9, 0.58);
+}
+
+.app-shell[data-tutorial-target="warmup-button"] [data-tutorial-id="warmup-button"],
+.app-shell[data-tutorial-target="start-monitoring"] [data-tutorial-id="start-monitoring"],
+.app-shell[data-tutorial-target="stop-monitoring"] [data-tutorial-id="stop-monitoring"] {
+  position: relative;
+  z-index: 46;
+  border-color: rgba(88, 166, 255, 0.98);
+  box-shadow:
+    0 0 0 4px rgba(88, 166, 255, 0.32),
+    0 0 34px rgba(88, 166, 255, 0.46);
+}
+
+.tutorial-balloon {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 50;
+  display: grid;
+  gap: 12px;
+  width: min(420px, calc(100vw - 32px));
+  padding: 20px;
+  border: 1px solid rgba(88, 166, 255, 0.5);
+  border-radius: 8px;
+  background: #161b22;
+  box-shadow: 0 24px 90px rgba(1, 4, 9, 0.72);
+}
+
+.tutorial-balloon p {
+  margin: 0;
+  color: #e6edf3;
+  line-height: 1.55;
+}
+
+.tutorial-warning {
+  padding: 10px 12px;
+  border: 1px solid rgba(248, 81, 73, 0.42);
+  border-radius: 8px;
+  color: #ffd8d4;
+  background: rgba(73, 18, 15, 0.65);
+}
+
+.tutorial-counter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid rgba(139, 148, 158, 0.22);
+  border-radius: 8px;
+  background: #0d1117;
+}
+
+.tutorial-counter span {
+  color: #8b949e;
+  font-size: 0.82rem;
+}
+
+.tutorial-counter strong {
+  color: #58a6ff;
+  font-size: 1.2rem;
 }
 
 .confirmation-dialog {

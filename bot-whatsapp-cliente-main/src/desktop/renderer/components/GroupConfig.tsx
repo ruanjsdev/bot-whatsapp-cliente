@@ -7,9 +7,11 @@ type Props = {
   busy: boolean;
   onRefresh: () => void;
   onSave: (group: string, groupId?: string, groupName?: string) => void;
+  disabled?: boolean;
+  tutorialNotice?: string;
 };
 
-export function GroupConfig({ config, groups, busy, onRefresh, onSave }: Props) {
+export function GroupConfig({ config, groups, busy, onRefresh, onSave, disabled, tutorialNotice }: Props) {
   const [group, setGroup] = useState("");
   const [selectedGroupId, setSelectedGroupId] = useState("");
 
@@ -20,7 +22,7 @@ export function GroupConfig({ config, groups, busy, onRefresh, onSave }: Props) 
     setGroup(config.grupoAlvoJid || config.grupoAlvoNome || "");
     setSelectedGroupId(config.grupoAlvoJid || "");
   }, [config.grupoAlvoJid, config.grupoAlvoNome]);
-
+    
   function submit(event: FormEvent) {
     event.preventDefault();
     const selectedGroup = groups.find((item) => item.id === selectedGroupId);
@@ -40,16 +42,18 @@ export function GroupConfig({ config, groups, busy, onRefresh, onSave }: Props) 
             : "Salve um grupo selecionando na lista ou informando nome/ID exato. Sem isso, o bot não envia mensagens."}
         </span>
       </div>
+      {tutorialNotice ? <div className="danger-notice">{tutorialNotice}</div> : null}
       <form className="group-form" onSubmit={submit}>
         <div className="form-heading-row">
           <label htmlFor="group-select">Selecione um grupo</label>
-          <button className="link-button" disabled={busy} type="button" onClick={onRefresh}>
+          <button className="link-button" disabled={busy || disabled} type="button" onClick={onRefresh}>
             Atualizar lista
           </button>
         </div>
         <select
           id="group-select"
           value={selectedGroupId}
+          disabled={disabled}
           onChange={(event) => {
             const id = event.target.value;
             const selectedGroup = groups.find((item) => item.id === id);
@@ -69,13 +73,14 @@ export function GroupConfig({ config, groups, busy, onRefresh, onSave }: Props) 
         <input
           id="group-input"
           value={group}
+          disabled={disabled}
           onChange={(event) => {
             setGroup(event.target.value);
             setSelectedGroupId("");
           }}
           placeholder="Ex: bot teste ou 120363...@g.us"
         />
-        <button className="button primary" disabled={busy || (!group.trim() && !selectedGroupId)} type="submit">
+        <button className="button primary" disabled={busy || disabled || (!group.trim() && !selectedGroupId)} type="submit">
           Salvar grupo
         </button>
       </form>

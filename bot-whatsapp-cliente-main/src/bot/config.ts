@@ -5,8 +5,11 @@ import { BotConfig } from "../shared/types";
 export const DEFAULT_CONFIG: BotConfig = {
   grupoAlvoJid: "",
   grupoAlvoNome: "",
+  grupoTesteJid: "",
+  grupoTesteNome: "",
   nomeEnvio: "Ruan Souza da Silva",
-  codigosMensagens: []
+  codigosMensagensAlvo: [],
+  codigosMensagensTeste: []
 };
 
 export class ConfigStore {
@@ -57,6 +60,23 @@ export class ConfigStore {
     });
   }
 
+  saveTestGroup(group: string): BotConfig {
+    const value = group.trim();
+    const looksLikeJid = value.includes("@g.us");
+
+    return this.save({
+      grupoTesteJid: looksLikeJid ? value : "",
+      grupoTesteNome: looksLikeJid ? "Grupo teste por ID" : value
+    });
+  }
+
+  saveTestGroupById(groupId: string, groupName: string): BotConfig {
+    return this.save({
+      grupoTesteJid: groupId.trim(),
+      grupoTesteNome: groupName.trim() || "Grupo teste"
+    });
+  }
+
   private ensureConfigFile() {
     if (!fs.existsSync(this.configPath)) {
       this.save(DEFAULT_CONFIG);
@@ -79,12 +99,20 @@ export class ConfigStore {
     return {
       grupoAlvoJid: typeof input.grupoAlvoJid === "string" ? input.grupoAlvoJid : "",
       grupoAlvoNome: typeof input.grupoAlvoNome === "string" ? input.grupoAlvoNome : "",
+      grupoTesteJid: typeof input.grupoTesteJid === "string" ? input.grupoTesteJid : "",
+      grupoTesteNome: typeof input.grupoTesteNome === "string" ? input.grupoTesteNome : "",
       nomeEnvio:
         typeof input.nomeEnvio === "string" && input.nomeEnvio.trim()
           ? input.nomeEnvio.trim()
           : DEFAULT_CONFIG.nomeEnvio,
-      codigosMensagens: Array.isArray(input.codigosMensagens)
-        ? input.codigosMensagens.filter((item) => typeof item === "string" && item.trim())
+      // support legacy `codigosMensagens` if present
+      codigosMensagensAlvo: Array.isArray(input.codigosMensagensAlvo)
+        ? input.codigosMensagensAlvo.filter((item) => typeof item === "string" && item.trim())
+        : Array.isArray((input as any).codigosMensagens)
+        ? (input as any).codigosMensagens.filter((item: any) => typeof item === "string" && item.trim())
+        : [],
+      codigosMensagensTeste: Array.isArray(input.codigosMensagensTeste)
+        ? input.codigosMensagensTeste.filter((item) => typeof item === "string" && item.trim())
         : []
     };
   }
