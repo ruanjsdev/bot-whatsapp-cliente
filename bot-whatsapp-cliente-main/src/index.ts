@@ -11,7 +11,7 @@ import { Boom } from "@hapi/boom";
 import readline from "readline";
 import fs from "fs";
 
-const MEU_NOME_COMPLETO = "Ruan Souza da Silva";
+const MEU_NOME_COMPLETO = "Alan Alves";
 const CONFIG_PATH = "config.json";
 
 type BotConfig = {

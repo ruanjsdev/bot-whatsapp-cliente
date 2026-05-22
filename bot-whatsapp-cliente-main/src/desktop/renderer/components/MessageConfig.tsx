@@ -105,7 +105,7 @@ export function MessageConfig({
           value={senderName}
           disabled={disabled}
           onChange={(event) => setSenderName(event.target.value)}
-          placeholder="Ex: Ruan Souza da Silva"
+          placeholder="Ex: Alan Alves"
         />
         <label htmlFor="codes-input">Um código por linha</label>
         <textarea

@@ -41,7 +41,6 @@ type OnboardingState = {
 };
 
 const ONBOARDING_STORAGE_KEY = "botOnboardingState";
-const ONBOARDING_COMPLETED_KEY = "botOnboardingCompleted";
 
 const initialOnboardingState: OnboardingState = {
   step: "warmup-group",
@@ -74,12 +73,10 @@ function normalizeMessages(senderName: string, codes: string[]) {
 }
 
 function loadOnboardingState(): OnboardingState {
-  if (window.localStorage.getItem(ONBOARDING_COMPLETED_KEY) === "true") {
-    return { ...initialOnboardingState, step: "completed" };
-  }
-
   try {
     const saved = JSON.parse(window.localStorage.getItem(ONBOARDING_STORAGE_KEY) || "");
+    if (saved?.step === "completed") return initialOnboardingState;
+
     return {
       ...initialOnboardingState,
       ...saved,
@@ -109,7 +106,6 @@ export default function App() {
 
   useEffect(() => {
     if (onboarding.step === "completed") {
-      window.localStorage.setItem(ONBOARDING_COMPLETED_KEY, "true");
       window.localStorage.removeItem(ONBOARDING_STORAGE_KEY);
       return;
     }
@@ -161,7 +157,6 @@ export default function App() {
   }
 
   function resetOnboarding() {
-    window.localStorage.removeItem(ONBOARDING_COMPLETED_KEY);
     window.localStorage.removeItem(ONBOARDING_STORAGE_KEY);
     setOnboarding(initialOnboardingState);
     setOnboardingError("");
