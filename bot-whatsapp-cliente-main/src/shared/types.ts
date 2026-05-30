@@ -45,6 +45,7 @@ export type BotSnapshot = {
   status: BotStatus;
   groupState: BotGroupState;
   qrCode: string;
+  pairingCode?: string;
   config: BotConfig;
   groups: BotGroup[];
   readinessChecks: BotReadinessCheck[];
