@@ -11,6 +11,8 @@ Use estes scripts quando o bot for rodar no PC do cliente.
 
 Depois disso, quando o Windows entrar na conta do usuario, o servidor do bot inicia sozinho.
 
+O instalador tenta usar o Agendador de Tarefas do Windows. Se o Windows negar permissao, ele cria automaticamente um atalho na pasta **Inicializar** do usuario, sem precisar de administrador.
+
 ## URL no aplicativo
 
 No mesmo Wi-Fi, configure o aplicativo com o IP do PC:
